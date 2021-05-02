@@ -1,0 +1,165 @@
+---
+title: "DataPrep"
+date: "03/04/2021"
+---
+
+```{r}
+library(plyr)
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(tidyr)
+library(phyloseq)
+library(DESeq2)
+library(corrplot)
+library(caret)
+library(gradientForest) 
+```
+
+```{r}
+dat <- read.csv('Input/Bac_otu_18.csv', stringsAsFactors=F)
+samps <- read.csv('Input/Bac_SampleID_18.csv')
+env <- read.csv('Input/Bac_env_18.csv')
+env$PH <- as.numeric(as.character(env$PH))
+points <- read.csv('Input/Bac_points_18.csv')
+tax <- read.csv('Input/Bac_tax_18.csv')
+
+mat <- select(dat, -zotuID)
+mat <- as.matrix(mat)
+rownames(mat) <- dat$zotuID
+mat <- t(mat)
+dat <- data.frame(Filename=rownames(mat), mat, stringsAsFactors=F)
+
+df <- full_join(samps, points)
+df <- full_join(df, env)
+df <- full_join(df, dat)
+
+rm(mat,dat,samps,env)
+```
+
+```{r}
+otus <- as.matrix(select(df, starts_with('Zotu')))
+rownames(otus) <- df$SampleID
+
+samps <- select(df, Filename:SO3)
+samps <- sample_data(samps)
+rownames(samps) <- df$SampleID
+
+taxonomy <- as.matrix(select(tax, Domain:Genus))
+rownames(taxonomy) <- tax$zotuID
+
+phy <- merge_phyloseq(otu_table(otus, taxa_are_rows=F), sample_data(samps), tax_table(taxonomy))
+```
+
+```{r}
+nozerootus <- otus[,colSums(otus)>0]
+trans_otus <- t(nozerootus)
+all(colnames(trans_otus) %in% rownames(samps))
+all(colnames(trans_otus) == rownames(samps))
+
+dds <- DESeqDataSetFromMatrix(countData = trans_otus, colData = samps, design= ~TRAN)
+
+dds <- estimateSizeFactors(dds)
+normalized_counts <- counts(dds, normalized=TRUE)
+normalized_counts <- t(normalized_counts)
+phy.n <- phy
+otu_table(phy.n) <- otu_table(normalized_counts, taxa_are_rows = FALSE)
+```
+
+```{r}
+rm(df,dds,otus,otus1,nozerootus,samps,tax,taxonomy,trans_otus,normalized_counts,points)
+
+phsq_list <- list (phy.n)
+
+compvar <- sample_data(phsq_list[[1]])
+compvar <- colnames(compvar)
+
+unwanted <- c("Filename","SampleID", "TRAN", "DIST")
+variables <- compvar
+variables
+
+for (var in unwanted){
+  variables <- variables[variables != var]
+}
+  
+level <- "Phylum"
+
+print (phsq_list[[1]]) 
+print (level %in% colnames (tax_table(phsq_list[[1]])))
+print (variables %in% colnames (sample_data(phsq_list[[1]])))
+```
+
+
+```{r}
+#Run 2.Read-In Functions.Rmd
+phsq_list <- lapply (phsq_list, shape_data, level = level, variables = variables)
+pcm_list <- lapply (phsq_list, get_spd_md, level = level, variables = variables)
+
+print (phsq_list) 
+names (pcm_list[[1]]) 
+str (pcm_list)
+```
+
+```{r}
+param_count <- 8
+
+for (i in 1:param_count){
+  pcm_list[[i]] <- pcm_list[[1]]
+}
+
+for (i in 1:(param_count-1)){
+  identical (pcm_list[[i]], pcm_list[[i+1]])
+}
+
+adj_vars <- vector ("list", length = 8)
+
+# fill list to be variable vectors
+for (i in 1:param_count){
+  adj_vars[[i]] <- variables[variables %!in% c ("LATI","LONG","SITE","ELEV","SLPE")]
+}
+
+for (i in 1:(param_count-1)){
+  identical (adj_vars[[i]], adj_vars[[i+1]])
+}
+
+trans <- list (FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE) 
+binary <- list (FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE) 
+rm_cc <- list (FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE)
+
+label <- list ("Set 1 / 8: only transformation",
+               "Set 2 / 8: transformation; removal of co-correlated ",
+               "Set 3 / 8: transformation; presence / absence",
+               "Set 4 / 8: transformation; removal of co-corr; pres. / abs.",
+               "Set 5 / 8: unmodified",
+               "Set 6 / 8: only removal of co-correlated",
+               "Set 7 / 8: only conversion to presence / absence",
+               "Set 8 / 8: presence / absence and removal of co-correlated")
+
+index <- list("1","2", "3", "4", "5", "6", "7", "8")
+
+pcm_list2 <- mapply (adjust_pcm,
+                     pcm = pcm_list, #list with lists of data frames
+                     adj = adj_vars, #use selected variables w/o selected
+                     trn = trans, #do transformations based on logic list
+                     bin = binary, #do presence/absence based on logic test
+                     rmc = rm_cc, #remove co-correlated based on logic list
+                     lbl = label, #custom label data sets, here for verification
+                     index = index,
+                     SIMPLIFY = FALSE)
+
+```
+
+```{r}
+#gradientForest
+gf_vars <- adj_vars
+
+for (i in c (1:8)){
+run_gradf(pcm = pcm_list2[[i]],
+          vrs = gf_vars[[i]],
+          lbl = label[[i]], 
+          rpl = 1000,
+          index = i)
+}
+
+save.image("./Output.Rdata")
+```

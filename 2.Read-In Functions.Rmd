@@ -1,0 +1,300 @@
+---
+title: "EnvPrep"
+date: "03/04/2021"
+---
+
+```{r}
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+
+```{r}
+get_corrplot <- function(reconst_df, label){
+  reconst_df <- sapply(reconst_df, is.numeric) %>% reconst_df[ , .]
+  cor_rc <- cor(reconst_df)
+  cex.before <- par("cex")
+  par(cex = 0.7)
+  corrpl <- corrplot.mixed(cor_rc, lower = "number", upper = "circle", order = "AOE", tl.cex = 0.7, tl.col = "black", tl.srt = 60, cl.cex = 1/par("cex"))
+  return(corrpl)
+}
+```
+
+```{r}
+remove_empty <- function(phsq_ob){
+  phsq_ob <- prune_taxa(taxa_sums(phsq_ob) > 0, phsq_ob)
+  phsq_ob <- prune_samples(sample_sums(phsq_ob) > 0, phsq_ob)
+  return(phsq_ob)
+}
+
+foo <- function(dat){
+  out <- lapply(dat, function(x) length(unique(x)))
+    want <- which(!out > 1)
+    unlist(want)
+}
+
+rm_empty_data <- function(phsq_ob){
+  message("rm_empty_data() called")
+	phsq_ob <- prune_taxa(taxa_sums(phsq_ob)>0,phsq_ob)
+	phsq_ob <- prune_samples(sample_sums(phsq_ob)>0,phsq_ob)
+	return(phsq_ob)
+}
+
+shape_data <- function(phsq_ob, level = c(rank_names(phsq_ob)), variables){
+  message("shape_data() called")
+  phsq_ob_in <- phsq_ob
+  pcm_locs <- as.vector(sample_data(phsq_ob)$SITE %in% c("AF","HV","OW","RL","TR"))
+  phsq_ob <- prune_samples(pcm_locs, phsq_ob)
+  defined_taxa <- as.vector(tax_table(phsq_ob)[,level] %!in% NA)
+  phsq_ob <- prune_taxa(defined_taxa, phsq_ob)
+  stopifnot (variables %in% colnames(sample_data(phsq_ob)))
+  sample_data(phsq_ob) <- sample_data(phsq_ob)[, which(colnames(sample_data(phsq_ob)) %in% variables)]
+  defined_data <- as.vector(complete.cases(sample_data(phsq_ob)))
+  message("complete.cases() called")
+  message("prune_samples() called")
+  phsq_ob <- rm_empty_data(phsq_ob)
+  message(length(sample_names(phsq_ob)), "Samples (", appendLF = FALSE)
+  message(100 * round(length(sample_names(phsq_ob))/length(sample_names(phsq_ob_in)), digits = 2)," %) and ", appendLF = FALSE)
+  message(length(taxa_names(phsq_ob)), "Taxa (", appendLF = FALSE)
+  message(100 * round(length(taxa_names(phsq_ob))/length(taxa_names(phsq_ob_in)), digits = 2)," %) retained")
+  return(phsq_ob)
+}
+```
+
+
+```{r}
+make_OTU_matrix <- function(ps_ob){
+  OTU <- otu_table(ps_ob)
+  if(taxa_are_rows(OTU)){
+    OTU <- t(OTU)
+  }
+  return (as (OTU, "matrix"))
+}
+
+get_spd_md <- function(phsq_ob, level = c(rank_names(phsq_ob)), variables){
+  message("get_spd_md() called")
+  phsq_ob <- tax_glom(phsq_ob, level, NArm=TRUE, bad_empty=c(NA, "", " ", "\t"))
+  spec <- data.frame(make_OTU_matrix(phsq_ob))
+  colnames(spec) <- make.names(tax_table(phsq_ob)[, level], unique = TRUE)
+  loc <- data.frame(sample_data(phsq_ob)[,c("LATI","LONG","SITE")])
+  geo <- data.frame(sample_data(phsq_ob)[,c("ELEV","ASPC","PH","DMF","COND","SLPE")])
+  macro <- data.frame(sample_data(phsq_ob)[,c("TN","TP","TC","MG","K","S","CA","P")])
+  micro <- data.frame(sample_data(phsq_ob)[,c("AL","ZN","B","CU","FE","MN","CECE")])
+  ions <- data.frame(sample_data(phsq_ob)[,c("NO2","BR","NO3","PO4","SO4","CL")])
+  grain <- data.frame(sample_data(phsq_ob)[,c("MUD","SAND","GRVL","MIN","MAX","MEAN","SO")])
+  xrf <- data.frame(sample_data(phsq_ob)[,c("SIO2","TIO2","AL2O3","FE2O3","MNO","MGO","CAO",
+                                            "NA2O","K2O","P2O5","SO3")])
+  pcm <- list(spec=spec,loc=loc,geo=geo,macro=macro,micro=micro,ions=ions,grain=grain,xrf=xrf)
+  return(pcm)
+}
+```
+
+
+```{r}
+adjust_pcm <- function(pcm, adj, trn, bin, rmc, lbl, index){
+  pcm_new <- pcm
+  rcs <- data.frame(pcm$spec)
+  head(rcs) 
+  if (bin == FALSE){ print ("- omitting conversion to presence / absence")} 
+  if (bin == TRUE){
+    print ("- conversion to presence / absence")
+    rcs <- data.frame(apply (rcs, 2, function (x) {as.integer(as.logical(x))}), row.names = rownames (rcs))
+    head (rcs)
+  }
+  rc <- data.frame(pcm$loc,pcm$geo,pcm$macro,pcm$micro,pcm$ions,pcm$grain,pcm$xrf)
+  rc <- rc[ , names(rc) %in% adj ] 
+  if (trn == FALSE){ print ("- omitting transformation")} 
+  if (trn == TRUE){
+    print ("- transforming")
+    rc_ppmod <- preProcess(rc, method=c ("YeoJohnson", "scale", "center"), verbose = FALSE)
+    rc <- predict(rc_ppmod, rc) 
+  }
+  rc <- sapply (rc, is.numeric) %>% rc[ , .]
+  cor_rc <- cor(rc, use="pairwise.complete.obs")
+  cor_rc_plot <- cor_rc
+  hcr_rc <- findCorrelation(cor_rc, cutoff = 0.8, names = TRUE)
+  if (rmc == FALSE) {
+    print ("- omitting removal of co-correlated")
+  }
+  if (rmc == TRUE) {
+    print ("- removal of co-correlated")
+    if (length (hcr_rc) != 0) {
+      rc <- rc[, names(rc) %!in% hcr_rc]
+      cor_rc_plot <-
+        cor_rc_plot[which (rownames (cor_rc_plot) %!in% hcr_rc), which (colnames (cor_rc_plot) %!in% hcr_rc)]
+      pcm_new$loc <- pcm_new$loc[,names(pcm_new$loc) %!in% hcr_rc]
+      pcm_new$geo <- pcm_new$geo[,names(pcm_new$geo) %!in% hcr_rc]
+      pcm_new$macro <- pcm_new$macro[,names(pcm_new$macro) %!in% hcr_rc]
+      pcm_new$micro <- pcm_new$micro[,names(pcm_new$micro) %!in% hcr_rc]
+      pcm_new$ions <- pcm_new$ions[,names(pcm_new$ions) %!in% hcr_rc]
+      pcm_new$grain <- pcm_new$grain[,names(pcm_new$grain) %!in% hcr_rc]
+      pcm_new$xrf <- pcm_new$xrf[,names(pcm_new$xrf) %!in% hcr_rc]
+    }
+  }
+  pcm_new$spec[which(names(pcm_new$spec)%in%names(rcs))] <- rcs[which(names(rcs)%in%names(pcm_new$spec))] 
+  pcm_new$geo[which(names(pcm_new$geo)%in%names(rc))] <- rc[which(names(rc)%in%names(pcm_new$geo))]
+  pcm_new$macro[which(names(pcm_new$macro)%in%names(rc))] <- rc[which(names(rc)%in%names(pcm_new$macro))] 
+  pcm_new$micro[which(names(pcm_new$micro)%in%names(rc))] <- rc[which(names(rc)%in%names(pcm_new$micro))]  
+  pcm_new$ions[which(names(pcm_new$ions)%in%names(rc))] <- rc[which(names(rc)%in%names(pcm_new$ions))]
+  pcm_new$grain[which(names(pcm_new$grain)%in%names(rc))] <- rc[which(names(rc)%in%names(pcm_new$grain))]   
+  pcm_new$xrf[which(names(pcm_new$xrf)%in%names(rc))] <- rc[which(names(rc)%in%names(pcm_new$xrf))] 
+  return (pcm_new)
+}
+```
+
+```{r}
+run_gradf <- function (pcm, # data frame list, here *MUST* contain LOND and LATD
+                       vrs, # variables to be considered for technique 
+                       lbl, # custom label for debugging
+                       rpl, # number of trees
+                       index
+                       ){
+  
+  message ("run_gradf() called with data ", lbl)
+
+  env <- data.frame(pcm[[2]],pcm[[3]],pcm[[4]],pcm[[5]],pcm[[6]]) 
+  spc <- pcm[[1]]
+  env <- env[ , names (env) %in% vrs]
+  spc <- as.matrix(spc)
+
+  message ("- calculating maximum number of splits")
+  
+  nSites <- dim (spc)[1]
+  nSpecs <- dim (spc)[2]
+  lev <- floor (log2(nSites * 0.368/3)) 
+  lev
+
+  message ("- calling gradientForest()")
+  
+  data <- cbind(env,spc)
+  data <- sapply(data,as.numeric)
+  data <- as.data.frame(data)
+  gf <- gradientForest(data,
+                       predictor.vars = colnames (env), 
+                       response.vars = colnames (spc), 
+                       ntree = rpl, 
+                       transform = NULL, 
+                       compact = T,
+                       nbin = 201, 
+                       maxLevel = lev, 
+                       corr.threshold = 0.5)
+  
+  message ("- model summary ", lbl)
+  print (gf)
+  print (gf$result)
+  print (gf$overall.imp)
+  print (gf$overall.imp2)
+  print (gf$imp.rsq)
+  print (gf$species.pos.rsq)
+  message ("- overall predictor importance plot ", lbl)
+  
+  .pardefault <- par (no.readonly = T)
+  
+  # plot overall predictor importance plot
+  plot (gf, plot.type = "Overall.Importance")
+  
+  tiff(paste("Overall.Importance",".tiff",sep=""),width=15,height=10,units="in",res=300)
+  
+  plot (gf, plot.type = "Overall.Importance")
+  dev.off()
+  
+  message ("- splits density plot ", lbl)
+  # splits density plot
+  most_important <- names (importance(gf))[1:length (importance(gf))] 
+  plot.new()
+  par (mgp = c(2, 0.75, 0))
+  plot (gf, plot.type = "Split.Density", imp.vars = most_important, leg.posn = "topright", cex.legend = 0.4, cex.axis = 0.6, cex.lab = 0.7, line.ylab = 0.9, par.args = list(mgp = c(1.5, 0.5, 0), mar = c(3.1, 1.5, 0.1, 1)))
+   
+  tiff(paste("Split.Density",".tiff",sep=""),width=10,height=9,units="in",res=300)
+  
+   plot (gf, plot.type = "Split.Density", imp.vars = most_important, leg.posn = "topright", cex.legend = 0.4, cex.axis = 0.6, cex.lab = 0.7, line.ylab = 0.9, par.args = list(mgp = c(1.5, 0.5, 0), mar = c(3.1, 1.5, 0.1, 1)))
+  dev.off()
+  
+  message ("- species cumulative plot ", lbl)
+  
+  # species cumulative plot
+  plot (gf, plot.type = "C", imp.vars = most_important, show.overall = F, legend = T, leg.posn = "topleft", leg.nspecies = 5, cex.lab = 0.7, cex.legend = 0.7, cex.axis = 0.6, line.ylab = 0.9, par.args = list(mgp = c(1.5, 0.5, 0), mar = c(2.5, 1, 0.1, 0.5), omi = c(0, 0.3, 0, 0)))
+  
+  tiff(paste("Species.Cumulative",".tiff",sep=""),width=10,height=10,units="in",res=300)
+  
+  plot (gf, plot.type = "C", imp.vars = most_important, show.overall = F, legend = T, leg.posn = "topleft", leg.nspecies = 5, cex.lab = 0.7, cex.legend = 0.7, cex.axis = 0.6, line.ylab = 0.9, par.args = list(mgp = c(1.5, 0.5, 0), mar = c(2.5, 1, 0.1, 0.5), omi = c(0, 0.3, 0, 0)))
+  dev.off()
+  
+  # diagnostic
+  message ("- predictor cumulative plot plot ", lbl)
+  
+  # predictor cumulative plot plot
+  plot (gf, plot.type = "C", imp.vars = most_important, show.species = F, common.scale = T, cex.axis = 0.6, cex.lab = 0.7, line.ylab = 0.9, par.args = list (mgp = c(1.5,0.5, 0), mar = c(2.5, 1, 0.1, 0.5), omi = c(0,0.3, 0, 0)))
+  
+  tiff(paste("Predictor.Cumulative",".tiff",sep=""),width=10,height=10,units="in",res=300)
+  
+  plot (gf, plot.type = "C", imp.vars = most_important, show.species = F, common.scale = T, cex.axis = 0.6, cex.lab = 0.7, line.ylab = 0.9, par.args = list (mgp = c(1.5,0.5, 0), mar = c(2.5, 1, 0.1, 0.5), omi = c(0,0.3, 0, 0)))
+  dev.off()
+  
+  # diagnostic
+  message ("- R2 measures of fit for each taxon ", lbl)
+      
+    tiff(paste("R2 fit",".tiff",sep=""),width=20,height=10,units="in",res=300)
+    
+    plot (gf, plot.type = "P", show.names = T, horizontal = T, cex.axis = 1, cex.labels = 0.6, line = 2.5)
+    dev.off()
+      
+    Phys_grid <- data.frame(env, pcm[[2]][ ,names(pcm[[2]]) %in% c( "LONG", "LATI")])
+    Phys_grid <- sapply(Phys_grid,as.numeric)
+    Phys_grid <- as.data.frame(Phys_grid)
+    imp.vars <- names (importance(gf))
+    Trans_grid <- cbind (Phys_grid[, c("LONG", "LATI")], predict(gf, Phys_grid[, imp.vars]))
+    Trans_site <- predict (gf)
+    
+    #diagnostic
+    message("- bi-plot of the biological space", lbl)
+    
+    #setting up a colour palette
+    PCs <- prcomp(na.omit(Trans_grid[,imp.vars]))
+    a1 <- PCs$x[, 1]
+    a2 <- PCs$x[, 2]
+    a3 <- PCs$x[, 3]
+    r <- a1 + a2
+    g <- -a2
+    b <- a3 + a2 - a1
+    r <- (r - min (r))/(max (r) - min (r)) * 255
+    g <- (g - min (g))/(max (g) - min (g)) * 255
+    b <- (b - min (b))/(max (b) - min (b)) * 255
+    
+    nvs <- dim (PCs$rotation)[1]
+    vec <- names (importance(gf))[1:round (length ( importance(gf)) / 2)] 
+    lv <- length (vec)
+    vind <- rownames (PCs$rotation) %in% vec
+    scal <- 40
+    xrng <- range (PCs$x[, 1], PCs$rotation[, 1]/scal) * 1.1
+    yrng <- range (PCs$x[, 2], PCs$rotation[, 2]/scal) * 1.1
+    par (.pardefault)
+    jit <- 0.002
+    
+    tiff(paste("biplot.bio",".tiff",sep=""),width=15,height=10,units="in",res=300)
+    
+    require(cluster)
+    ncl <- 4
+    clPCs <- clara(PCs$x, ncl)
+    medcolR <- r[clPCs$i.med]
+    medcolG <- g[clPCs$i.med]
+    medcolB <- b[clPCs$i.med]
+    plot((PCs$x[, 1:2]), xlim = xrng, ylim = yrng, pch = ".", cex = 8, col = rgb(medcolR[clPCs$clustering],medcolG[clPCs$clustering], medcolB[clPCs$clustering],max = 255), asp = 1)
+  arrows(rep(0, lv), rep(0, lv), PCs$rotation[vec,1]/scal, PCs$rotation[vec, 2]/scal, length = 0.0625)
+  text(PCs$rotation[vec, 1]/scal + jit * sign(PCs$rotation[vec,1]), PCs$rotation[vec, 2]/scal + jit * sign(PCs$rotation[vec,2]), labels = vec)
+  text(clPCs$medoids[, 1:2], labels = seq(1, ncl))
+  legend("topleft", as.character(seq(1, ncl)),pch = 15, cex = 3, pt.cex=3,col = rgb(medcolR, medcolG,medcolB, max = 255))
+    dev.off()
+          
+    message ("- bi-plot of the geographical space", lbl)
+
+    tiff(paste("biplot.geo",".tiff",sep=""),width=15,height=10,units="in",res=300)
+    
+    par (mfrow=c(1,1))
+    plot (Trans_grid[, c("LONG", "LATI")], pch = ".", cex = 8, asp = 1,
+     col = rgb(medcolR[clPCs$clustering],medcolG[clPCs$clustering], medcolB[clPCs$clustering],max = 255), main = "bi-plot of the geographical space",
+     sub = lbl)
+  legend("topleft", as.character(seq(1, ncl)),pch = 15, cex = 3, pt.cex=3,col = rgb(medcolR, medcolG, medcolB, max = 255))
+  dev.off()
+  
+}
+```
