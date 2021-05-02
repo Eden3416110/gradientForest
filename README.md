@@ -1,2 +1,2 @@
 # gradientForest
-GF analyses for microbial datasets
+GF analyses adapted for microbial datasets
